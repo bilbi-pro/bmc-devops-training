@@ -1,0 +1,7 @@
+---
+- name: Install fluentd
+  become: true
+  hosts: microservices
+  tasks:
+     - name: Execute the deployment script
+       script: ../depscripts/install_fluentd_microservices.sh

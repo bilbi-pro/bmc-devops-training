@@ -1,0 +1,414 @@
+import com.cwctravel.hudson.plugins.extended_choice_parameter.ExtendedChoiceParameterDefinition
+import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
+
+pipeline {
+  agent none
+  options {
+    ansiColor('xterm')
+    disableConcurrentBuilds()
+    skipDefaultCheckout()
+  }
+  triggers{
+    githubPush()
+  }
+  parameters {
+    choice(
+      name: 'ENV_NAME',
+      choices: ["frd1", "frt1",  "ort2", "sgt2", "vfs1"],
+      description: 'Select the relevant environment'
+    )
+  }
+  // environment {
+  // }
+  stages {
+    stage('Loading config...') {
+      steps {
+        setJenkinsNode()
+      }
+    }
+    stage('Loading ES config from env...') {
+      agent {label jenkinsNode}
+      steps {
+        getEsClusters()
+        getESInfo()
+      }
+    }
+    stage('Fill Action Params'){
+      agent {label jenkinsNode}
+      steps{
+        ationSelect()
+        approveExcecutionConfig()
+      }
+    }
+    stage('Performing Selected Action') {
+      agent { label jenkinsNode }
+      steps {
+        doAction()
+      }
+    }
+  }
+  post {
+    unstable {
+      echo "Sending message to Slack"
+    }
+    failure {
+      echo "Sending message to Slack"
+    }
+    success {
+      echo "Sending message to Slack"
+    }
+  }
+}
+
+def setJenkinsNode() {
+  switch(params.ENV_NAME){
+    case "frd1": jenkinsNode  = "frd1-jenkins-slave-new" ; break
+    case "frt1": jenkinsNode  = "frt1-jenkins-slave-new" ; break
+    case "frp1": jenkinsNode  = "frp1-jenkins-slave-new" ; break
+    case "irp1": jenkinsNode  = "irp1-jenkins-slave-new" ; break
+    case "ort2": jenkinsNode  = "ort2-jenkins-slave-new" ; break
+    case "orp2": jenkinsNode  = "orp2-jenkins-slave-new" ; break
+    case "sgt2": jenkinsNode  = "sgt2-jenkins-slave-new" ; break
+    case "sgp2": jenkinsNode  = "sgp2-jenkins-slave-new" ; break
+    case "vfs1": jenkinsNode  = "vfs1-jenkins-slave-new" ; break
+    case "vfp1": jenkinsNode  = "vfp1-jenkins-slave-new" ; break
+  }
+  ES_ENV = params.ENV_NAME;
+  ES_PROT="http";
+  ES_PORT="9200";
+  
+  
+}
+
+def LoadESVersion() {
+  def connection = new URL( "${ES_URI}/_cluster/health").openConnection() as HttpURLConnection
+  connection.setRequestMethod("GET");
+  println connection.responseCode + ": " + connection.inputStream.text
+
+  println "##########################";
+  println getESVersion;
+  println "##########################";
+}
+
+def getEsClusters(){
+  def elasticsearchClusters= sh ( script: "curl -k -s  http://127.0.0.1:8500/v1/catalog/services | jq -rc 'keys[]' | grep elasticsearch-client | sed -z 's/\\n/,/g'", returnStdout: true).trim().tokenize(',');
+  echo "elasticSearch Clusters Detected: ${elasticsearchClusters}"
+  def _elasticClusterName = input (id: 'elastcSelector', message: 'Please select elasticSearch Cluster you want to work on', ok: 'OK', parameters: [choice(choices: elasticsearchClusters, description: '', name: 'es_cluster_selected')]);
+  echo "elasticSearch Cluster selected: ${_elasticClusterName}";
+  ES_URI="${ES_PROT}://${_elasticClusterName}.service.consul:${ES_PORT}";
+}
+
+def getESInfo() {
+  ES_STATUS = sh ( script: "curl -s -k -XGET '${ES_URI}/_cluster/health' | jq '.status'", returnStdout: true).trim();
+  echo "elasticSearch Status: ${ES_STATUS}"
+  ES_REPOS = sh (script: "curl -s -k -XGET '${ES_URI}/_snapshot/_all' | jq 'keys[]' -r | sed -z 's/\\n/,/g'", returnStdout: true).trim().split(',');
+  echo "elasticSearch Repos: ${ES_REPOS}"
+  ES_REPO_NAME = sh (script: "curl -s -k -XGET '${ES_URI}/_snapshot/_all' | jq 'keys[0]' -r ", returnStdout: true).trim();
+  echo "elasticSearch Repo: ${ES_REPO_NAME}"
+  ES_INDICES = sh (script: "curl -s -k -XGET '${ES_URI}/_cat/indices?format=json' | jq '.[].index' -r | sed -z 's/\\n/,/g'", returnStdout: true).trim().split('.');
+  echo "elasticSearch ES_INDICES: ${ES_INDICES}"
+  ES_PARTNERS = sh (script: "curl -s -k -XGET '${ES_URI}/_cat/indices?format=json' | jq '.[].index' -r | grep '^([^_]+)' -E -o | sort | uniq | grep -v '\\.' | sed -z 's/\\n/,/g'", returnStdout: true).trim().tokenize(',');
+  echo "elasticSearch ES_PARTNERS: ${ES_PARTNERS}"
+}
+
+def getSnapshotsForRepo(String esUri,String repoName){
+  return sh (script: "curl -s -k -XGET '${esUri}/_snapshot/${repoName}/_all' | jq -rc '.snapshots[] | .snapshot +\"; (taken on:\"+.start_time+\"); state: \" + .state '| sed -z 's/\\n/,/g'", returnStdout: true).trim().split(',');
+}
+def getIndicesFromSnapshoot(String esUri,String repoName,String snapshootName){
+  return sh (script: "curl -s -k -XGET '${esUri}/_snapshot/${repoName}/${snapshootName}' | jq '.snapshots[0].indices[]' -rc | sed -z 's/\\n/,/g'", returnStdout: true).trim().split(',');
+}
+
+def selectIndecesForAction(String message, String okMsg = 'OK', String[] indices){
+  ixSelectionType = input (id: 'ActionType', message: 'What Indices you would like to handle?', ok: 'OK', parameters: [choice(choices: ['All','Selective', 'Selective By Client'], description: '',name: "ixSelect")]);
+  if (ixSelectionType=="All") 
+  switch(ixSelectionType){
+    case "All":
+      return "*".split(",") as String[];
+      break;
+    case "Selective":
+      return (input (id: 'indicesSelection', message: "${message}", ok: "${okMsg}", parameters: [extendedChoice(defaultValue: '', description: '', descriptionPropertyValue: '', multiSelectDelimiter: ',', name: "ixSelect", quoteValue: false, saveJSONParameterToFile: false, type: 'PT_MULTI_SELECT', value: ES_INDICES.split(','), visibleItemCount: 50)])).split(',') as String[];;
+      break;
+    case "Selective By Client":
+      index_regex= (input (id: 'indicesSelection', message: "${message}", ok: "${okMsg}", parameters: [extendedChoice(defaultValue: '', description: '', descriptionPropertyValue: '', multiSelectDelimiter: ',', name: "ixSelect", quoteValue: false, saveJSONParameterToFile: false, type: 'PT_MULTI_SELECT', value: ES_INDICES.split(','), visibleItemCount: 50)])).split(',') as String[];;
+      rtnStrArray=[] as String[] ;
+      index_regex.each(){ ixName ->    rtnStrArray.app(esUri,ixName);   }
+      break;
+  }
+
+  return 
+}
+
+def approveExcecutionConfig(){
+  JOB_APPROVAL = input (id: 'approval', message: '*Please review all details entered*', ok: 'OK', parameters: [
+    booleanParam(defaultValue: false, description: "EXCECUTION ENV: ${ES_ENV}", name: 'env'),
+    booleanParam(defaultValue: false, description: "ES CLUSTER: ${ES_URI}", name: 'cluster'),
+    booleanParam(defaultValue: false, description: "ACTION: ${JOB_ACTION}", name: 'action'),
+    booleanParam(defaultValue: false, description: "RELATED REPO TO OPERATE: ${ES_REPO_NAME}", name: 'repo'),
+    booleanParam(defaultValue: false, description: "RELATED SNAPSHOT TO OPERATE: ${JOB_SNAPSHOT_TO_BASE}", name: 'snapshot'),
+    booleanParam(defaultValue: false, description: "RELEATED INDICES APPLIED: ${JOB_INDICES_LIST}", name: 'indices'),
+    choice(choices: ['approve','cancel'], description: 'PLEASE APPROVE ALL', name: "approve")
+  ]);
+  if (!(JOB_APPROVAL.approve =="approve")){
+    currentBuild.result = 'ABORTED'
+    echo('User didnt approved the params')
+  }
+  
+}
+
+def doAction(){
+  switch(JOB_ACTION){
+    case "Backup":
+      println(JOB_INDICES_LIST);
+      println(JOB_INDICES_LIST.getClass());
+      return backupIndices(ES_URI,ES_REPO_NAME,JOB_SNAPSHOT_TO_BASE,JOB_INDICES_LIST as String[] );
+      break;
+    case "Restore":
+      println(JOB_INDICES_LIST);
+      println(JOB_INDICES_LIST.getClass());
+      return restoreIndices(ES_URI,ES_REPO_NAME,JOB_SNAPSHOT_TO_BASE,JOB_INDICES_LIST as String[]);;
+      break;
+    case "Advanced Restore":
+      return doRestore();
+      break;
+    case "Setup Backup repository":
+      return doRestore();
+      break;
+    default: 
+      println("The value is unknown"); 
+      break;  
+  }
+}
+
+def closeIndex(String esUri, String ixName,boolean ignoreUnavailableIndices = true){
+  def selectedIndeces = (!ixName=="*") ? ixName: "_all";
+  curlReq = "curl -k -s -XPOST ${esUri}/${ixName}/_close?ignore_unavailable=${ignoreUnavailableIndices}&wait_for_completion=true";
+  println(curlReq);
+  curlOp = sh (script: curlReq, returnStdout: true).trim();
+  println(curlOp);
+}
+
+def deleteIndex(String esUri, String ixName,boolean ignoreUnavailableIndices = true){
+  def selectedIndeces = (!ixName=="*") ? ixName: "_all";
+  curlReq = "curl -k -s -XPUT ${snapUriPath}?ignore_unavailable=${ignoreUnavailableIndices}&wait_for_completion=true";
+  curlOp = sh (script:curlReq , returnStdout: true).trim();
+  println(curlOp);
+}
+
+def restoreIndices(String esUri, String esSnapshotRepoName, String esSnapshotName,String[] indexNames= null,boolean ignoreUnavailableIndices = true, boolean includeGlobalState = true){
+  def selectedIndeces = (indexNames?.trim()) ? indexNames.join(',') : "*" ;
+  def snapUriPath = "${esUri}/_snapshot/${esSnapshotRepoName}/${esSnapshotName}";
+  selectedIndeces.tokenize(',').each(){ ixName ->    closeIndex(esUri,ixName);   }
+  curlReq = "curl -k -s -XPUT ${snapUriPath}/_restore?wait_for_completion=true -d '{ \"indices\": \"${selectedIndeces}\",\"ignore_unavailable\": true,\"include_global_state\": false }'";
+  curlOp = sh (script: curlReq, returnStdout: true).trim();
+  println(curlOp);
+  echo "elasticSearch Snapshot output: ${curlOp}"
+
+}
+
+def getBackupStatus(String snapUri){
+  return sh (script: "curl -k -s -XGET ${snapUriPath}/ | jq '.snapshots[0].state'", returnStdout: true).trim();
+}
+def backupIndices(String esUri, String esSnapshotRepoName, String esSnapshotName,String[] indexNames= null, boolean ignoreUnavailableIndices = true, boolean includeGlobalState = true, boolean waitForCompletion = true){
+  println(indexNames);
+  println(indexNames.getClass() );
+  def selectedIndeces = indexNames.join(',');
+  def snapUriPath = "${esUri}/_snapshot/${esSnapshotRepoName}/${esSnapshotName}";
+  
+  curlReq = "curl -k -s -XPUT ${snapUriPath}?wait_for_completion=${waitForCompletion} -d '{ \"indices\": \"${selectedIndeces}\",\"ignore_unavailable\": ${ignoreUnavailableIndices},\"include_global_state\": true }'";
+  alertBackupStarted(curlReq);
+  curlOp = sh (script: curlReq, returnStdout: true).trim();
+  def json = new groovy.json.JsonSlurper().parseText(curlOp);
+  println(curlOp)
+  println(json)
+  if (json.status!=null && json.status==500 ){
+    alertBackupFailed(curlOp);
+    failPipiline(curlOp);
+  }
+
+  if (json.snapshot.state!=null){
+    parseBackupResultDetails(curlOp);
+    switch(json.snapshot.state){
+      case "SUCCESS":
+        alertBackupPassed(curlOp)
+        break;
+      case "PARTIAL":
+        alertBackupFailed(alertBackupFailed(curlOp));
+        break;
+      default:
+        println("Return Code unsupported"); 
+        alertBackupFailed(alertBackupFailed(curlOp));
+        break;  
+    }
+  }
+
+  PassedPipiline(curlOp);
+  echo "elasticSearch Snapshot FInished: ${curlOp}"
+}
+
+
+def ationSelect(){
+  JOB_ACTION = input (id: 'ActionType', message: 'Please select what you want to do?', ok: 'OK', parameters: [choice(choices: ['Backup','Restore'], description: '',name: "ixSelect")])
+  switch(JOB_ACTION){
+    case "Backup":
+      JOB_SNAPSHOT_TO_BASE = "sre-autosnap"+new Date().format("yyyyMMdd-HHmm");
+      JOB_INDICES_LIST = selectIndecesForAction("Please select Indeces to ${JOB_ACTION}?", 'ok', ES_INDICES);
+
+      break;
+    case "Restore":
+      def esRepoSnapshootsList = getSnapshotsForRepo("${ES_REPO_NAME}");
+      def _tmp_snapname = input (id: 'ActionType', message: 'Please select what snapshot you want to restor from', ok: 'OK', parameters: [choice(choices: esRepoSnapshootsList, description: '',name: "ixSelect")]);
+      JOB_SNAPSHOT_TO_BASE = _tmp_snapname.substring(0,_tmp_snapname.indexOf(";"));   
+      JOB_INDICES_LIST = selectIndecesForAction("Please select Indeces to ${JOB_ACTION}?",'OK', getIndicesFromSnapshoot(ES_REPO_NAME,JOB_SNAPSHOT_TO_BASE ) );
+
+      break;
+    case "Advanced Restore":
+      input( message: "Let's promote?", ok: 'Release!', parameters: [extendedChoice( defaultValue: 'blue,green,yellow,blue', description: '', descriptionPropertyValue: 'blue,green,yellow,blue', multiSelectDelimiter: ',', name: 'favColor', quoteValue: false, saveJSONParameterToFile: false, type: 'PT_MULTI_SELECT', value: 'blue,green,yellow,blue', visibleItemCount: 5)])
+      break;
+    default: 
+      println("The value is unknown"); 
+      break;  
+  }
+
+  
+}
+
+def parseBackupResultDetails(String msg){
+  println('parseBackupResultDetails');
+  println(msg);
+}
+def alertBackupStarted(String msg){
+  println('alertBackupStarted');
+  try {
+  slackSend (
+    color: '#3EB991',
+    channel: "#ott-sre-jenkins-successes",
+    message: """*SRE SRE BACKUP STARTED:*
+    ENV: ${ES_ENV},
+    CLUSTER: ${ES_URI},
+    REPOSITORY: ${ES_REPO_NAME},
+    SNAPSHOT NAME: ${JOB_SNAPSHOT_TO_BASE},
+    INDICES: ${JOB_INDICES_LIST}
+    result: ```
+    ${msg}
+    ```
+    """
+  )
+  } catch (e) {
+    println(e);
+  }
+}
+def alertBackupPassed(String msg){
+
+  println('alertBackupPassed');
+  try {
+  slackSend (
+    color: '#3EB991',
+    channel: "#ott-sre-jenkins-successes",
+    message: """*SRE SRE BACKUP SUCCESS:*
+    ENV: ${ES_ENV},
+    CLUSTER: ${ES_URI},
+    REPOSITORY: ${ES_REPO_NAME},
+    SNAPSHOT NAME: ${JOB_SNAPSHOT_TO_BASE},
+    INDICES: ${JOB_INDICES_LIST}
+    result: ```
+    ${msg}
+    ```
+    """
+  )
+  } catch (e) {
+    println(e);
+  }
+}
+def alertBackupPartial(String msg){
+  println('alertBackupPartial');
+  try{
+  slackSend (
+    color: '#FFC300',
+    channel: "ott-sre-jenkins-failures",
+    message: """*SRE SRE BACKUP SUCCESS PARTIAL:*
+    ENV: ${ES_ENV},
+    CLUSTER: ${ES_URI},
+    REPOSITORY: ${ES_REPO_NAME},
+    SNAPSHOT NAME: ${JOB_SNAPSHOT_TO_BASE},
+    INDICES: ${JOB_INDICES_LIST}
+    result: ```
+    ${msg}
+    ```
+    """
+  )} catch (e) {
+    println(e);
+  }
+}
+def alertBackupFailed(String exception){
+  println('alertBackupFailed');
+  try{
+  slackSend (
+    color: '#FFC300',
+    channel: "ott-sre-jenkins-failures",
+    message: """*SRE SRE BACKUP FAILED:*
+    ENV: ${ES_ENV},
+    CLUSTER: ${ES_URI},
+    REPOSITORY: ${ES_REPO_NAME},
+    SNAPSHOT NAME: ${JOB_SNAPSHOT_TO_BASE},
+    INDICES: ${JOB_INDICES_LIST}
+    result: ```
+    ${exception}
+    ```
+    """
+  )
+  } catch (e) {
+    println(e);
+  }
+  failPipiline(exception);
+}
+
+def PassedPipiline(String exception){
+  currentBuild.result = 'SUCCESS';
+  // slackSend (
+  //   color: '#3EB991',
+  //   channel: "#ott-sre-jenkins-successes",
+  //   message: """*SRE SRE BACKUP SUCCESS:*
+  //   ENV: ${ES_ENV},
+  //   CLUSTER: ${ES_URI},
+  //   REPOSITORY: ${ES_REPO_NAME},
+  //   SNAPSHOT NAME: ${JOB_SNAPSHOT_TO_BASE},
+  //   INDICES: ${JOB_INDICES_LIST}
+  //   result: ```
+  //   ${msg}
+  //   ```
+  //   """
+  // )
+  println(exception);
+}
+def failPipiline(String exception){
+
+  error(exception);
+}
+
+
+
+/* DROP
+
+def RunESBackupAll(String[] indices = null){
+  echo "elasticSearch Repo: ${ES_REPO_NAME}"
+  
+  def selectedIndeces = "";
+  if (indices?.trim()) {
+    selectedIndeces = indices.join(',');
+  } else {
+    selectedIndeces = "*"
+  }
+  echo "elasticSearch Repo: ${selectedIndeces}"
+  def snapshotName = "sre-autosnap"+new Date().format("yyyyMMdd-HHmm");
+  def snapUriPath = "${ES_URI}/_snapshot/${ES_REPO_NAME}/${snapshotName}"
+  backup_output = sh (script: "curl -k -s -XPUT ${snapUriPath}?wait_for_completion=true -d '{ \"indices\": \"${selectedIndeces}\",\"ignore_unavailable\": true,\"include_global_state\": true }'", returnStdout: true).trim()
+  def bak_status = sh (script: "curl -k -s -XGET ${snapUriPath}/ | jq '.snapshots[0].state'", returnStdout: true).trim();
+  while(bak_status=="SUCCESS"){
+    sleep(10000)
+    bak_status = sh (script: "curl -k -s -XGET ${snapUriPath}/ | jq '.snapshots[0].state'", returnStdout: true).trim();
+  }
+  echo "elasticSearch Snapshot FInished: ${snapUriPath}"
+}
+
+*/

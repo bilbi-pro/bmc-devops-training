@@ -1,0 +1,7 @@
+---
+- name: Install prometheus node exporter
+  become: true
+  hosts: microservices
+  tasks:
+     - name: Execute the deployment script
+       script: install_node_exporter.sh
