@@ -163,10 +163,69 @@ main
 ```
 
 
-## helm practices:
+## helm practices: Deploy Portainer using Helm Chart
 
+### install helm
+```bash
+curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
 ```
-helm template -f ./chart-values/portainer-poc-prd-values.yaml portainer-poc ./charts/portainer/ > ./outputs/portainer-poc-prd.yaml 
-helm install -f ./chart-values/portainer-poc-prd-values.yaml portainer-poc ./charts/portainer/
-helm upgrade -f ./chart-values/portainer-poc-prd-values.yaml portainer-poc ./charts/is-selenium/
+
+### Deploy Portainer using Helm Chart
+
+details:
+* https://portainer.github.io/k8s/charts/portainer/
+* https://github.com/portainer/k8s
+
+Before proceeding, ensure to create a namespace in advance. For instance:
+```
+kubectl create namespace portainer
+```
+
+#### Install the chart repository
+```bash
+helm repo add portainer https://portainer.github.io/k8s/
+helm repo update
+```
+
+#### Testing the Chart
+```bash
+helm install --dry-run --debug portainer -n portainer deploy/helm/portainer
+```
+
+#### install
+
+option 1:
+
+```bash
+helm install --create-namespace -n portainer portainer portainer/portainer
+```
+option 2:
+
+```bash
+helm upgrade -i -n portainer portainer portainer/portainer
+```
+
+#### remove
+```bash
+helm delete -n portainer portainer
+kubectl delete namespace portainer
+```
+
+#### helm pull
+
+```bash
+helm pull portainer/portainer --untar
+```
+
+#### helm template
+
+```bash
+helm template -f ./chart-values/ironshield-webrisk-prd.yaml ironshield-webrisk-prd ./charts/ironshield-webrisk/ > ./outputs/ironshield-webrisk-prd-deployment.yaml
+```
+#### local install
+```bash
+helm install -f ./chart-values/ironshield-webrisk-prd.yaml ironshield-webrisk-prd  ./charts/ironshield-webrisk/
+helm upgrade -f ./chart-values/ironshield-webrisk-prd.yaml ironshield-webrisk-prd  ./charts/ironshield-webrisk/
+helm uninstall is-ironshield-webrisk-prd
+
 ```
