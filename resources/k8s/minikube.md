@@ -189,7 +189,7 @@ helm repo update
 
 #### Testing the Chart
 ```bash
-helm install --dry-run --debug portainer -n portainer deploy/helm/portainer
+helm install --dry-run --debug portainer -n portainer portainer/portainer
 ```
 
 #### install
