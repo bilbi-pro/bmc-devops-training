@@ -15,7 +15,7 @@ sudo apt-get install -y apt-transport-https \
   curl \
   software-properties-common \
   jq \
-  conntrack \
+  conntrack 
 
 #Add Docker’s official GPG key:
 
