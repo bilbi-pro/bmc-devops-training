@@ -5,7 +5,7 @@
 
 ```bash
 
-#! /bin/bash -f
+#!/bin/bash -f
 
 sudo apt-get update
 
