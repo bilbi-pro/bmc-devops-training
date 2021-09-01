@@ -220,12 +220,12 @@ helm pull portainer/portainer --untar
 #### helm template
 
 ```bash
-helm template -f ./chart-values/ironshield-webrisk-prd.yaml ironshield-webrisk-prd ./charts/ironshield-webrisk/ > ./outputs/ironshield-webrisk-prd-deployment.yaml
+helm template -f ./chart-values/chart-values.yaml release-name ./charts/chart/ > ./outputs/chart-release-deployment.yaml
 ```
 #### local install
 ```bash
-helm install -f ./chart-values/ironshield-webrisk-prd.yaml ironshield-webrisk-prd  ./charts/ironshield-webrisk/
-helm upgrade -f ./chart-values/ironshield-webrisk-prd.yaml ironshield-webrisk-prd  ./charts/ironshield-webrisk/
-helm uninstall is-ironshield-webrisk-prd
+helm template -f ./chart-values/chart-values.yaml release-name ./charts/chart/ > ./outputs/chart-release-deployment.yaml
+helm install -f ./chart-values/chart-values.yaml release-name ./charts/chart/
+helm upgrade -f ./chart-values/chart-values.yaml release-name ./charts/chart/
 
 ```
